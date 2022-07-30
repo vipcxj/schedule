@@ -2,6 +2,7 @@ package io.github.vipcxj.schedule;
 
 import java.io.Closeable;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 
 /**
@@ -14,6 +15,23 @@ public class Schedule implements Closeable {
     private static final Event BUSY = new Event(0, null, null);
     private final Thread thread;
     private volatile boolean parking;
+    private static final AtomicReference<Schedule> INSTANCE = new AtomicReference<>();
+
+    /**
+     * Get the singleton instance.
+     * @return singleton instance
+     */
+    public static Schedule instance() {
+        Schedule schedule = INSTANCE.get();
+        if (schedule == null) {
+            schedule = new Schedule();
+            if (!INSTANCE.compareAndSet(null, schedule)) {
+                schedule.close();
+                schedule = INSTANCE.get();
+            }
+        }
+        return schedule;
+    }
 
     public Schedule() {
         thread = new Thread(this::run);
