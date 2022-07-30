@@ -4,7 +4,7 @@
 
     <groupId>io.github.vipcxj</groupId>
     <artifactId>schedule</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1-SNAPSHOT</version>
 
     <name>Schedule</name>
     <url>https://github.com/vipcxj/schedule</url>
@@ -21,7 +21,7 @@
         <url>https://github.com/vipcxj/schedule</url>
         <connection>scm:git:git://github.com/vipcxj/schedule.git</connection>
         <developerConnection>scm:git:https://github.com/vipcxj/schedule.git</developerConnection>
-        <tag>v1.0.0</tag>
+        <tag>HEAD</tag>
     </scm>
     <developers>
         <developer>
