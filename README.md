@@ -1,4 +1,4 @@
-Schedule - A High-performance schedule manager
+Schedule - A high-performance schedule manager
 ===============
 
 [![Maven Release][maven-shield]][maven-link]
