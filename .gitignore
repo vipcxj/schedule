@@ -1,0 +1,11 @@
+# Created by .ignore support plugin (hsz.mobi)
+*.iml
+.idea/
+.vscode/
+target/
+.settings/
+.classpath
+.factorypath
+.project
+*.log
+dependency-reduced-pom.xml
