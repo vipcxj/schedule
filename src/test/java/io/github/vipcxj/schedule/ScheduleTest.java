@@ -25,10 +25,10 @@ public class ScheduleTest {
     }
 
     @Test
-    void test() throws InterruptedException {
-        long[] deadlines = LongStream.range(1, 1001).map(i -> i * 3).toArray();
+    void testAddEvent() throws InterruptedException {
+        long[] deadlines = LongStream.range(1, 1001).map(i -> i * 5).toArray();
         shuffle(deadlines);
-        Schedule schedule = new Schedule();
+        Schedule schedule = Schedule.instance();
         AtomicInteger index = new AtomicInteger();
         AtomicLong error = new AtomicLong();
         long[] results = new long[1000];
@@ -43,9 +43,38 @@ public class ScheduleTest {
             });
         });
         System.out.println("Use time: " + (System.nanoTime() - now) / 1000.0 / 1000.0);
-        Thread.sleep(3200);
+        Thread.sleep(5200);
         Arrays.sort(deadlines);
         Assertions.assertArrayEquals(deadlines, results);
+        long errorMs = error.get() / 1000 / 1000;
+        System.out.println("Sum error: " + errorMs + " / Mean error: " + errorMs / 1000.0);
+    }
+
+    @Test
+    void testRemoveEvent() throws InterruptedException {
+        Random random = new Random();
+        long[] timeouts = new long[1000];
+        for (int i = 0; i < timeouts.length; ++i) {
+            timeouts[i] = 100 + random.nextInt(1000);
+        }
+        AtomicInteger index1 = new AtomicInteger();
+        AtomicInteger index2 = new AtomicInteger();
+        AtomicLong error = new AtomicLong();
+        IntStream.range(0, timeouts.length).forEach(i -> {
+            long timeout = timeouts[i] * 1000 * 1000;
+            EventHandle handle = Schedule.instance().addEvent(timeout, index1::getAndIncrement);
+            long deadline = timeout / 2 + System.nanoTime();
+            Schedule.instance().addEvent(timeout / 2, () -> {
+                // System.out.println("removing");
+                index2.getAndIncrement();
+                error.getAndAdd(Math.abs(System.nanoTime() - deadline));
+                boolean removed = handle.remove();
+                Assertions.assertTrue(removed);
+            });
+        });
+        Thread.sleep(1200);
+        Assertions.assertEquals(0, index1.get());
+        Assertions.assertEquals(1000, index2.get());
         long errorMs = error.get() / 1000 / 1000;
         System.out.println("Sum error: " + errorMs + " / Mean error: " + errorMs / 1000.0);
     }

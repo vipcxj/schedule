@@ -10,9 +10,9 @@ import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
  */
 public class Schedule implements Closeable {
 
-    private volatile Event head;
-    private static final AtomicReferenceFieldUpdater<Schedule, Event> HEAD = AtomicReferenceFieldUpdater.newUpdater(Schedule.class, Event.class, "head");
-    private static final Event BUSY = new Event(0, null, null);
+    private final Event head = new Event(0, null, TAIL, null);
+    private static final Event TAIL = new Event(0, null, null, null);
+    private static final Event BUSY = new Event(0, null, null, null);
     private final Thread thread;
     private volatile boolean parking;
     private static final AtomicReference<Schedule> INSTANCE = new AtomicReference<>();
@@ -45,7 +45,7 @@ public class Schedule implements Closeable {
     }
 
     private synchronized void waitForever() throws InterruptedException {
-        this.head = null;
+        this.head.next = TAIL;
         this.parking = true;
         try {
             this.wait();
@@ -72,29 +72,56 @@ public class Schedule implements Closeable {
     private void run() {
         try {
             while (true) {
-                Event head = this.head;
-                if (head != null) {
+                Event first = this.head.next;
+                assert first != null;
+                if (first != TAIL) {
                     long now = System.nanoTime();
-                    if (head.deadline <= now) {
-                        Event next = head.next;
-                        if (Event.NEXT.weakCompareAndSet(head, next, BUSY)) {
-                            if (head == this.head && HEAD.weakCompareAndSet(this, head, next)) {
-                                head.next = null;
-                                head.run();
+                    if (first.deadline <= now) {
+                        Event prev = first.tryLockPrev();
+                        if (prev != null) {
+                            Event next = first.next;
+                            // The next is null if and only if first is removed.
+                            // We always lock first.prev before remove it.
+                            // Since we have successfully locked the first.prev,
+                            // we can make sure next is not null.
+                            assert next != null;
+                            if (next == TAIL) {
+                                if (head.weakCasNext(first, TAIL)) {
+                                    first.prev = first.next = null;
+                                    first.run();
+                                } else {
+                                    first.prev = prev;
+                                }
                             } else {
-                                head.next = next;
+                                Event nextPrev = next.tryLockPrev();
+                                if (nextPrev != null) {
+                                    if (nextPrev != first) {
+                                        next.prev = nextPrev;
+                                        first.prev = prev;
+                                        continue;
+                                    }
+                                    if (first == this.head.next && head.weakCasNext(first, next)) {
+                                        next.prev = head;
+                                        first.prev = first.next = null;
+                                        first.run();
+                                    } else {
+                                        next.prev = nextPrev;
+                                        first.prev = prev;
+                                    }
+                                } else {
+                                    first.prev = prev;
+                                }
                             }
-                        } else if (next == BUSY) {
-                            throw new IllegalStateException("This is impossible.");
                         }
-                    } else if (head.deadline - now > 1000 * 100){
-                        waitFor(head.deadline - now);
+                    } else if (first.deadline - now > 1000 * 100){
+                        waitFor(first.deadline - now);
                     } else {
                         Thread.yield();
                     }
+                } else if (first == BUSY) {
+                    Thread.yield();
                 } else {
-                    // promise wait and addEvent will not invoked at the same time.
-                    if (HEAD.weakCompareAndSet(this, null, BUSY)) {
+                    if (this.head.weakCasNext(TAIL, BUSY)) {
                         waitForever();
                     }
                 }
@@ -102,51 +129,89 @@ public class Schedule implements Closeable {
         } catch (InterruptedException ignored) { }
     }
 
-    static class Event {
+    static class Event implements EventHandle {
         private final long deadline;
-        private final Object callbacks;
+        private final Runnable callback;
         private volatile Event next;
-        private static final AtomicReferenceFieldUpdater<Event, Event> NEXT = AtomicReferenceFieldUpdater.newUpdater(Event.class, Event.class, "next");
-        Event(long deadline, Object callbacks, Event next) {
+        private static final AtomicReferenceFieldUpdater<Event, Event> NEXT
+                = AtomicReferenceFieldUpdater.newUpdater(Event.class, Event.class, "next");
+        private volatile Event prev;
+        private static final AtomicReferenceFieldUpdater<Event, Event> PREV
+                = AtomicReferenceFieldUpdater.newUpdater(Event.class, Event.class, "prev");
+        Event(long deadline, Runnable callback, Event next, Event prev) {
             this.deadline = deadline;
-            this.callbacks = callbacks;
+            this.callback = callback;
             this.next = next;
+            this.prev = prev;
+        }
+
+        boolean weakCasNext(Event expect, Event update) {
+            return NEXT.weakCompareAndSet(this, expect, update);
+        }
+
+        Event tryLockPrev() {
+            Event prev = this.prev;
+            return (prev != null && prev != BUSY && PREV.weakCompareAndSet(this, prev, BUSY)) ? prev : null;
+        }
+
+        @Override
+        public boolean remove() {
+            while (true) {
+                Event prev = this.prev;
+                Event next = this.next;
+                if (prev == null || next == null) {
+                    return false;
+                }
+                if (prev == BUSY) {
+                    Thread.yield();
+                    continue;
+                }
+                if (!PREV.weakCompareAndSet(this, prev, BUSY)) {
+                    Thread.yield();
+                    continue;
+                }
+                if (next == BUSY) {
+                    this.prev = prev;
+                    Thread.yield();
+                    continue;
+                }
+                Event nextPrev = null;
+                if (next != TAIL) {
+                    nextPrev = next.tryLockPrev();
+                    if (nextPrev == null) {
+                        this.prev = prev;
+                        Thread.yield();
+                        continue;
+                    }
+                    if (nextPrev != this) {
+                        next.prev = nextPrev;
+                        this.prev = prev;
+                        Thread.yield();
+                        continue;
+                    }
+                }
+                if (prev.weakCasNext(this, next)) {
+                    if (next != TAIL) {
+                        next.prev = prev;
+                    }
+                    this.next = this.prev = null;
+                    return true;
+                } else {
+                    if (next != TAIL) {
+                        next.prev = nextPrev;
+                    }
+                    this.prev = prev;
+                }
+            }
         }
 
         public void run() {
-            if (callbacks instanceof Runnable) {
-                try {
-                    ((Runnable) callbacks).run();
-                } catch (Throwable t) {
-                    t.printStackTrace();
-                }
-            } else {
-                for (Runnable callback : (Runnable[]) callbacks) {
-                    try {
-                        callback.run();
-                    } catch (Throwable t) {
-                        t.printStackTrace();
-                    }
-                }
-
+            try {
+                callback.run();
+            } catch (Throwable t) {
+                t.printStackTrace();
             }
         }
-    }
-
-    private Event addCallback(Event event, Runnable callback) {
-        Object callbacks = event.callbacks;
-        Runnable[] newCallbacks;
-        if (callbacks instanceof Runnable) {
-            newCallbacks = new Runnable[2];
-            newCallbacks[0] = (Runnable) callbacks;
-            newCallbacks[1] = callback;
-        } else {
-            Runnable[] oldCallbacks = (Runnable[]) callbacks;
-            newCallbacks = new Runnable[oldCallbacks.length + 1];
-            System.arraycopy(oldCallbacks, 0, newCallbacks, 0, oldCallbacks.length);
-            newCallbacks[oldCallbacks.length] = callback;
-        }
-        return new Event(event.deadline, newCallbacks, event.next);
     }
 
     /**
@@ -155,8 +220,8 @@ public class Schedule implements Closeable {
      * @param unit the time unit.
      * @param callback the callback.
      */
-    public void addEvent(long time, TimeUnit unit, Runnable callback) {
-        addEvent(unit.toNanos(time), callback);
+    public EventHandle addEvent(long time, TimeUnit unit, Runnable callback) {
+        return addEvent(unit.toNanos(time), callback);
     }
 
     /**
@@ -164,47 +229,65 @@ public class Schedule implements Closeable {
      * @param nanoTime the time in nanoseconds when the callback invoked.
      * @param callback the callback.
      */
-    public void addEvent(long nanoTime, Runnable callback) {
+    public EventHandle addEvent(long nanoTime, Runnable callback) {
         long deadline = System.nanoTime() + nanoTime;
         while (true) {
-            Event head = this.head;
-            if (head == null) {
-                if (HEAD.weakCompareAndSet(this, null, new Event(deadline, callback, null))) {
+            Event first = this.head.next;
+            if (first == TAIL) {
+                Event event = new Event(deadline, callback, TAIL, head);
+                if (head.weakCasNext(TAIL, event)) {
                     signal();
-                    return;
+                    return event;
                 }
-            } else if (head != BUSY) {
-                if (head.deadline > deadline && HEAD.weakCompareAndSet(this, head, new Event(deadline, callback, head))) {
-                    signal();
-                    return;
-                } else if (head.deadline == deadline && HEAD.weakCompareAndSet(this, head, addCallback(head, callback))) {
-                    return;
-                } else if (head.deadline < deadline) {
-                    Event node = head;
-                    Event next = node.next;
-                    if (next != BUSY) {
-                        while (next != null && next.deadline < deadline) {
-                            node = next;
-                            next = next.next;
-                        }
+            } else if (first == BUSY) {
+                Thread.yield();
+            } else {
+                if (deadline < first.deadline) {
+                    Event prev = first.tryLockPrev();
+                    if (prev == null) {
+                        continue;
                     }
-                    Event newEvent;
-                    if (next != BUSY) {
-                        if (next == null) {
-                            newEvent = new Event(deadline, callback, null);
-                            if (Event.NEXT.weakCompareAndSet(node, null, newEvent)) {
-                                return;
-                            }
-                        } else if (next.deadline == deadline) {
-                            newEvent = addCallback(next, callback);
-                            if (Event.NEXT.weakCompareAndSet(node, next, newEvent)) {
-                                return;
-                            }
+                    if (prev != head) {
+                        first.prev = prev;
+                        continue;
+                    }
+                    Event event = new Event(deadline, callback, first, head);
+                    if (head.weakCasNext(first, event)) {
+                        first.prev = event;
+                        signal();
+                        return event;
+                    }
+                } else {
+                    Event node = first;
+                    Event next = first.next;
+                    while (next != null && next != TAIL && deadline >= next.deadline) {
+                        node = next;
+                        next = next.next;
+                    }
+                    if (next == BUSY) {
+                        throw new RuntimeException("This is impossible");
+                    }
+                    if (next == null) {
+                        Thread.yield();
+                        continue;
+                    }
+                    if (next == TAIL) {
+                        Event event = new Event(deadline, callback, TAIL, node);
+                        if (node.weakCasNext(TAIL, event)) {
+                            return event;
+                        }
+                    } else {
+                        Event nextPrev = next.tryLockPrev();
+                        if (nextPrev == null) {
+                            Thread.yield();
+                            continue;
+                        }
+                        Event event = new Event(deadline, callback, next, node);
+                        if (node.weakCasNext(next, event)) {
+                            next.prev = event;
+                            return event;
                         } else {
-                            newEvent = new Event(deadline, callback, next);
-                            if (Event.NEXT.weakCompareAndSet(node, next, newEvent)) {
-                                return;
-                            }
+                            next.prev = nextPrev;
                         }
                     }
                 }
