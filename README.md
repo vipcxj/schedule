@@ -10,7 +10,7 @@ First, select a implementation library to the Maven dependency. Currently, only 
 <dependency>
     <groupId>io.github.vipcxj</groupId>
     <artifactId>schedule</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
 </dependency>
 ```
 
