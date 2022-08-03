@@ -214,6 +214,60 @@ public class Schedule implements Closeable {
         }
     }
 
+    static class InvalidHandle implements EventHandle {
+
+        @Override
+        public boolean remove() {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    /**
+     * Used for CAS.
+     * For example:
+     * <pre>
+     *     static class DisposableImpl implements JDisposable {
+     *
+     *         // Create a handle placeholder representing invalid handle.
+     *         private static final EventHandle INVALID = Schedule.createInvalidHandle();
+     *         private volatile EventHandle handle;
+     *         private static final AtomicReferenceFieldUpdater<DisposableImpl, EventHandle> HANDLE
+     *                 = AtomicReferenceFieldUpdater.newUpdater(DisposableImpl.class, EventHandle.class, "handle");
+     *
+     *         void updateHandle(EventHandle newHandle) {
+     *             while (true) {
+     *                 EventHandle handle = this.handle;
+     *                 if (handle == INVALID || HANDLE.weakCompareAndSet(this, handle, newHandle)) {
+     *                     return;
+     *                 }
+     *             }
+     *         }
+     *
+     *         public void dispose() {
+     *             while (true) {
+     *                 EventHandle handle = this.handle;
+     *                 if (handle == INVALID) {
+     *                     return;
+     *                 }
+     *                 if (HANDLE.weakCompareAndSet(this, handle, INVALID)) {
+     *                     handle.remove();
+     *                     return;
+     *                 }
+     *             }
+     *         }
+     *
+     *         public boolean isDisposed() {
+     *             return handle == INVALID;
+     *         }
+     *     }
+     * </pre>
+     * @return a invalid handle.
+     *
+     */
+    public static EventHandle createInvalidHandle() {
+        return new InvalidHandle();
+    }
+
     /**
      * schedule the callback
      * @param time the time when the callback invoked.
