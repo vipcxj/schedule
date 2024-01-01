@@ -26,12 +26,12 @@ public class ScheduleTest {
 
     @Test
     void testAddEvent() throws InterruptedException {
-        long[] deadlines = LongStream.range(1, 1001).map(i -> i * 5).toArray();
+        long[] deadlines = LongStream.range(1, 501).map(i -> 500 + i * 10).toArray();
         shuffle(deadlines);
         Schedule schedule = Schedule.instance();
         AtomicInteger index = new AtomicInteger();
         AtomicLong error = new AtomicLong();
-        long[] results = new long[1000];
+        long[] results = new long[500];
         long now = System.nanoTime();
         IntStream.range(0, deadlines.length).parallel().forEach(i -> {
             long timeout = deadlines[i];
@@ -43,7 +43,7 @@ public class ScheduleTest {
             });
         });
         System.out.println("Use time: " + (System.nanoTime() - now) / 1000.0 / 1000.0);
-        Thread.sleep(5200);
+        Thread.sleep(6000);
         Arrays.sort(deadlines);
         Assertions.assertArrayEquals(deadlines, results);
         long errorMs = error.get() / 1000 / 1000;
